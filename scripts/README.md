@@ -6,19 +6,14 @@ This directory contains utility scripts for the Blockypuck project.
 
 ### sync_blockchain.sh
 
-Automatically syncs multiple folders and files to USB devices using rsync.
+Automatically syncs multiple folders and files to USB devices using rsync. Designed primarily for syncing Dogecoin blockchain data to Blockypuck devices for offline storage and backup.
 
 #### Features
 
 - **Multiple source paths**: Sync multiple folders and individual files
-- Auto-detects USB devices containing specific keyword in name
-- **Automatic disk mounting**: Finds and mounts unmounted disks when run as root
-- Handles devices being plugged/unplugged dynamically  
-- Comprehensive logging and error handling
-- Prevents multiple simultaneous runs
-- Checks available space before syncing
-- Supports both mount point and label-based detection
-- **PUP management**: Optional integration with systemd-nspawn containers via machinectl
+- **Auto-detects USB devices**: Filter devices containing specific keyword in name or label
+- **PUP management**: Optional integration with pups on Dogebox to gracefully stop and restart containers
+- **Auto-mounting**: Automatically mounts unmounted USB devices when run with root privileges
 - **Command-line parameters**: Fully configurable via command-line arguments
 
 #### Usage
@@ -36,7 +31,7 @@ Automatically syncs multiple folders and files to USB devices using rsync.
 - `-u, --pup`: PupID for machinectl operations (optional)
 - `-h, --help`: Show help message
 
-PupID can be determined on your dogebox by running `_dbxroot pup list`. If that hasn't been added yet, an alternative is to run `sudo machinectl list` to list out all running pup IDs, then referencing folders within `/opt/dogebox/pups/storage/` to find the correct ID for Dogecoin Core - It will have the `blocks` and `chainstate` folders.
+PupID can be determined on your dogebox by running `_dbxroot pup list`. If you're running an older version without that command, an alternative is to run `sudo machinectl list` to list out all running pup IDs, then reference folders within `/opt/dogebox/pups/storage/` to find the correct ID for Dogecoin Core - it will contain the `blocks` and `chainstate` folders.
 
 #### Examples
 
@@ -65,24 +60,26 @@ sudo ./sync_blockchain.sh -s '/opt/dogebox/pups/storage/<pup-id>/chainstate' -d 
 
 #### Installation
 
-1. Enable cron if it isn't already. Add the following to `/opt/dogebox/nix/dogebox.nix`
+1. Enable cron if it isn't already. Add the following to `/opt/dogebox/nix/dogebox.nix`:
+```nix
+services.cron.enable = true;
 ```
-    services.cron.enable = true;
-```
-Then run `_dbxroot nix rs`. (These may nede to be run as root with `sudo su -`)
+Then run `_dbxroot nix rs`. (These may need to be run as root with `sudo su -`)
 
-2. Make script executable:
+2. Copy the script to your device
+
+3. Make script executable:
 ```bash
 chmod +x sync_blockchain.sh
 ```
 
-3. Create log directory (if using default log location):
+4. Create log directory (if using default log location):
 ```bash
 sudo mkdir -p /var/log
 sudo touch /var/log/blockchain_sync.log
 ```
 
-4. Add to crontab with parameters (run every 30 minutes):
+5. Add to crontab with parameters (run every 30 minutes):
 ```bash
 crontab -e
 ```
@@ -99,12 +96,19 @@ Or run hourly with different PUP:
 
 #### USB Device Naming
 
-Name your USB devices to include the pattern word (default: "BLOCKYPUCK"):
+The script matches USB devices by either:
+1. **Mount point name**: The directory name where the device is mounted
+2. **Device label**: The filesystem label of the USB device
+
+Name your USB devices to include the pattern word (e.g., "blockypuck"):
 - BLOCKYPUCK_BACKUP_1
 - DATA_BLOCKYPUCK_01
 - blockypuck-storage
 
-The match is case-insensitive.
+The match is case-insensitive. You can set the device label using:
+- Linux: `sudo e2label /dev/sdX1 "blockypuck-backup"`
+- FAT32: `sudo mlabel -i /dev/sdX1 ::BLOCKYPUCK`
+- exFAT: `sudo exfatlabel /dev/sdX1 "blockypuck-backup"`
 
 #### Monitoring
 
@@ -115,14 +119,16 @@ tail -f /var/log/blockchain_sync.log
 
 #### How Files Are Synced
 
-The script syncs each source path to the USB device:
+The script syncs each source path to the USB device based on the `-d` parameter:
 
-- **Directories**: Synced to `USB:/blockchain_data/[directory_name]/`
+- **Directories**: Synced to `USB:/<sync_dir>/[directory_name]/`
   - Performs incremental sync (only copies new/changed files)
-  - Example: `/opt/app/test/folder1` → `USB:/blockchain_data/folder1/`
+  - Example with `-d blockchain_data`: `/opt/app/test/folder1` → `USB:/blockchain_data/folder1/`
+  - Example with `-d .`: `/opt/app/test/folder1` → `USB:/folder1/`
   
-- **Files**: Copied directly to `USB:/blockchain_data/`
-  - Example: `/opt/app/test/file1` → `USB:/blockchain_data/file1`
+- **Files**: Copied directly to `USB:/<sync_dir>/`
+  - Example with `-d blockchain_data`: `/opt/app/test/file1` → `USB:/blockchain_data/file1`
+  - Example with `-d .`: `/opt/app/test/file1` → `USB:/file1`
 
 #### Rsync Options Used
 
@@ -132,20 +138,22 @@ The script syncs each source path to the USB device:
 - `-t`: Preserve modification times
 - `-D`: Preserve device and special files
 - `-v`: Verbose output
+- `--update`: Skip files that are newer on the destination
 - `--no-owner`: Don't preserve file ownership (avoids chown errors)
 - `--no-group`: Don't preserve group ownership
-- `--exclude`: Excludes temporary files and locks
+- `--exclude`: Excludes hidden files, temporary files and locks (.*. *.tmp, *.lock)
+- `--log-file`: Creates detailed rsync log for debugging
 
 #### Auto-mounting Feature
 
 When run with root privileges (using `sudo`), the script will:
-1. Detect unmounted USB devices
-2. Temporarily mount them to `/media/<device_name>`
+1. Detect unmounted USB devices using `lsblk` and `/dev/disk/by-label/`
+2. Temporarily mount them to `/media/<device_name>` (read-only first for safety)
 3. Check if they match the USB pattern
-4. Perform the sync operation
+4. If matching, remount as read-write and perform the sync operation
 5. Automatically unmount temporarily mounted devices when complete
 
-This is useful for devices that are plugged in but not automatically mounted by the system.
+This is useful for devices that are plugged in but not automatically mounted by the system. The script also handles devices identified by filesystem labels for more consistent device identification.
 
 #### PUP Management Feature
 
@@ -170,15 +178,39 @@ This feature is useful for:
 
 #### Troubleshooting
 
-1. **No devices found**: Check USB device names contain the pattern
-2. **Permission denied**: Run with appropriate permissions or adjust paths
-3. **Insufficient space**: Script checks space before syncing
-4. **Already running**: Script uses lock file to prevent multiple instances
-5. **Unmounted devices not detected**: Run with `sudo` to enable auto-mounting
+1. **No devices found**: 
+   - Check USB device names or labels contain the pattern
+   - Verify devices are properly formatted and readable
+   - Try running with `sudo` for auto-mounting
+   - Check debug messages in the log file for pattern matching details
+
+2. **Permission denied**: 
+   - Run with appropriate permissions or adjust paths
+   - Ensure write permissions on USB device
+
+3. **Insufficient space**: 
+   - Script checks space before syncing and will skip devices without enough space
+   - Check log for space requirements
+
+4. **Already running**: 
+   - Script uses lock file (`/var/run/blockchain_sync.lock`) to prevent multiple instances
+   - Check for stale lock files if script isn't actually running
+
+5. **Unmounted devices not detected**: 
+   - Run with `sudo` to enable auto-mounting
+   - Verify device is recognized by system (`lsblk` or `fdisk -l`)
+
+6. **PUP won't stop/start**: 
+   - Ensure correct PupID is provided
+   - Verify `machinectl` and `_dbxroot` commands are available
+   - Check system logs for container-related errors
 
 #### Security Notes
 
-- Script creates lock file in `/var/run/`
-- Logs stored in `/var/log/`
+- Script creates lock file in `/var/run/` to prevent concurrent executions
+- Logs stored in `/var/log/` with detailed sync information
+- Additional rsync logs created with `.rsync` suffix for debugging
 - Consider encrypting USB devices for sensitive blockchain data
-- Adjust rsync excludes based on your blockchain type
+- Adjust rsync excludes based on your blockchain type and security requirements
+- Script temporarily mounts devices read-only first for safety
+- Automatic cleanup ensures temporary mounts are removed on exit
