@@ -8,7 +8,7 @@ BlockyPuck helps you keep a copy of the Dogecoin blockchain ready to go at all t
 The included sync script will help you keep the files up to date on your chosen device, set it up on a Dogebox or whatever device you have the blockchain synced on.
 
 ## Contents
-- `/cad` - 3D printable case files
+- `/CAD` - 3D printable case files
 - `/images` - Repo image files
 - `/scripts` - Utility scripts
 
