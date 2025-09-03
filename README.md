@@ -27,3 +27,5 @@ After installing the Dogecoin Core Pup and connecting your BlockyPuck, goto Sett
 
 ## Keeping BlockyPuck Up-To-Date
 On a Dogebox or any device with a synced Dogecoin Core, setup `/scripts/sync_blockchain.sh` to keep connected storage devices loaded with the latest blockchain data!
+
+![Import Blockchain Screenshot](/images/BlockyPucks.jpg)
