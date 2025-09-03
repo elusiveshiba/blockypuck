@@ -254,7 +254,9 @@ for MOUNT_POINT in /media/* /mnt/* /run/media/*/* ; do
     DEVICE_NAME=$(basename "$MOUNT_POINT")
     
     # Check if device name contains the pattern (case insensitive)
+    log_message "DEBUG: Checking device '$DEVICE_NAME' against pattern '$USB_NAME_PATTERN'"
     if echo "$DEVICE_NAME" | grep -qi "$USB_NAME_PATTERN"; then
+        log_message "DEBUG: Device '$DEVICE_NAME' matches pattern '$USB_NAME_PATTERN'"
         # Check if mount point is actually mounted
         if mountpoint -q "$MOUNT_POINT"; then
             log_message "Found matching USB device: $DEVICE_NAME at $MOUNT_POINT"
@@ -351,6 +353,8 @@ for MOUNT_POINT in /media/* /mnt/* /run/media/*/* ; do
         else
             log_message "Device $DEVICE_NAME found but not mounted"
         fi
+    else
+        log_message "DEBUG: Device '$DEVICE_NAME' does not match pattern '$USB_NAME_PATTERN'"
     fi
 done
 
@@ -362,31 +366,68 @@ for LABEL_PATH in /dev/disk/by-label/*; do
     
     LABEL_NAME=$(basename "$LABEL_PATH")
     
+    log_message "DEBUG: Checking label '$LABEL_NAME' against pattern '$USB_NAME_PATTERN'"
     if echo "$LABEL_NAME" | grep -qi "$USB_NAME_PATTERN"; then
+        log_message "DEBUG: Label '$LABEL_NAME' matches pattern '$USB_NAME_PATTERN'"
         # Get the actual device
         DEVICE=$(readlink -f "$LABEL_PATH")
+        log_message "DEBUG: Label '$LABEL_NAME' resolves to device '$DEVICE'"
         
         # Check if it's mounted
         MOUNT_POINT=$(lsblk -no MOUNTPOINT "$DEVICE" 2>/dev/null | head -n1)
+        log_message "DEBUG: Device '$DEVICE' mount point: '$MOUNT_POINT'"
+        
+        # If not mounted, try to mount it
+        if [ -z "$MOUNT_POINT" ] || [ "$MOUNT_POINT" = "" ]; then
+            log_message "Device $DEVICE (label: $LABEL_NAME) is not mounted, attempting to mount..."
+            
+            # Create a mount point based on the label
+            SAFE_LABEL=$(echo "$LABEL_NAME" | tr ' ' '_' | tr -cd '[:alnum:]_-')
+            MOUNT_POINT="/media/${SAFE_LABEL}"
+            
+            if mkdir -p "$MOUNT_POINT" 2>/dev/null; then
+                if mount "$DEVICE" "$MOUNT_POINT" 2>/dev/null; then
+                    log_message "Successfully mounted $DEVICE to $MOUNT_POINT"
+                    TEMPORARILY_MOUNTED+=("$MOUNT_POINT")
+                else
+                    log_message "ERROR: Failed to mount $DEVICE to $MOUNT_POINT"
+                    rmdir "$MOUNT_POINT" 2>/dev/null
+                    continue
+                fi
+            else
+                log_message "ERROR: Failed to create mount point $MOUNT_POINT"
+                continue
+            fi
+        fi
         
         if [ -n "$MOUNT_POINT" ] && [ "$MOUNT_POINT" != "" ]; then
-            # Check if we haven't already processed this mount point
-            if ! echo "$MOUNT_POINT" | grep -q "^/media/\|^/mnt/\|^/run/media/"; then
-                log_message "Found labeled device: $LABEL_NAME at $MOUNT_POINT"
-                
-                DEST_PATH="$MOUNT_POINT/$SYNC_DIR"
-                
-                if ! mkdir -p "$DEST_PATH" 2>/dev/null; then
-                    log_message "ERROR: Cannot create directory on $LABEL_NAME"
+            log_message "Found labeled device: $LABEL_NAME at $MOUNT_POINT"
+            
+            # Check if mounted read-only and remount as read-write
+            if mount | grep -q "$MOUNT_POINT.*[(,]ro[,)]"; then
+                log_message "Device is mounted read-only, remounting as read-write..."
+                if mount -o remount,rw "$MOUNT_POINT" 2>/dev/null; then
+                    log_message "Successfully remounted $MOUNT_POINT as read-write"
+                else
+                    log_message "ERROR: Failed to remount $MOUNT_POINT as read-write"
                     DEVICES_FAILED=$((DEVICES_FAILED + 1))
                     continue
                 fi
-                
-                log_message "Starting sync to labeled device $LABEL_NAME"
-                
-                SYNC_SUCCESS=true
-                
-                for SOURCE_PATH in "${SOURCE_PATHS[@]}"; do
+            fi
+            
+            DEST_PATH="$MOUNT_POINT/$SYNC_DIR"
+            
+            if ! mkdir -p "$DEST_PATH" 2>/dev/null; then
+                log_message "ERROR: Cannot create directory on $LABEL_NAME"
+                DEVICES_FAILED=$((DEVICES_FAILED + 1))
+                continue
+            fi
+            
+            log_message "Starting sync to labeled device $LABEL_NAME"
+            
+            SYNC_SUCCESS=true
+            
+            for SOURCE_PATH in "${SOURCE_PATHS[@]}"; do
                     BASENAME=$(basename "$SOURCE_PATH")
                     
                     if [ -f "$SOURCE_PATH" ]; then
@@ -442,8 +483,9 @@ for LABEL_PATH in /dev/disk/by-label/*; do
                     send_notification "Partial sync failure for USB device $LABEL_NAME"
                     DEVICES_FAILED=$((DEVICES_FAILED + 1))
                 fi
-            fi
-        fi
+        fi  # Close the mount point check
+    else
+        log_message "DEBUG: Label '$LABEL_NAME' does not match pattern '$USB_NAME_PATTERN'"
     fi
 done
 
